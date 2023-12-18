@@ -8,3 +8,4 @@ cmake_install.cmake
 diff_gaussian_rasterization_batched/__pycache__/
 *.so
 *.a
+.vscode/

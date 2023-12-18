@@ -15,6 +15,7 @@
 #include <sstream>
 #include <iostream>
 #include <tuple>
+#include <vector>
 #include <stdio.h>
 #include <cuda_runtime_api.h>
 #include <memory>
@@ -34,7 +35,14 @@ std::function<char *(size_t N)> resizeFunctional(torch::Tensor &t)
   return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<
+  int,
+  torch::Tensor,
+  torch::Tensor,
+  std::vector<torch::Tensor>,
+  std::vector<torch::Tensor>,
+  std::vector<torch::Tensor>
+>
 RasterizeGaussiansCUDA(
     const torch::Tensor &background,
     const torch::Tensor &means3D,
@@ -56,20 +64,27 @@ RasterizeGaussiansCUDA(
     const bool prefiltered,
     const bool debug)
 {
+  bool omit_scale = scales.ndimension() == 1 && scales.size(0) == 0;
+  bool omit_rot = rotations.ndimension() == 1 && rotations.size(0) == 0;
+  bool omit_cov = cov3D_precomp.ndimension() == 1 && cov3D_precomp.size(0) == 0;
+  bool omit_sh = sh.ndimension() == 1 && sh.size(0) == 0;
+  bool omit_color = colors.ndimension() == 1 && colors.size(0) == 0;
+
   if (means3D.ndimension() != 3 || means3D.size(2) != 3)
   {
     AT_ERROR("means3D must have dimensions (batch, num_points, 3)");
   }
 
-
   auto batch = means3D.size(0);
   auto num_points = means3D.size(1);
 
-  if (batch == 0) {
+  if (batch == 0)
+  {
     AT_ERROR("batch size must be > 0");
   }
 
-  if (num_points == 0) {
+  if (num_points == 0)
+  {
     AT_ERROR("num_points must be > 0");
   }
 
@@ -78,29 +93,38 @@ RasterizeGaussiansCUDA(
     AT_ERROR("background must have dimensions (3)");
   }
 
-  if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != NUM_CHANNELS)
+  if (!omit_color)
   {
-    AT_ERROR("colors must have dimensions (batch, num_points, 3)");
+    if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != NUM_CHANNELS)
+    {
+      AT_ERROR("colors must have dimensions (batch, num_points, 3)");
+    }
   }
-
   if (opacity.ndimension() != 3 || opacity.size(0) != batch || opacity.size(1) != num_points || opacity.size(2) != 1)
   {
     AT_ERROR("opacity must have dimensions (batch, num_points, 1)");
   }
-
-  if (scales.ndimension() != 3 || scales.size(0) != batch || scales.size(1) != num_points || scales.size(2) != 3)
+  if (!omit_scale)
   {
-    AT_ERROR("scales must have dimensions (batch, num_points, 3)");
+    if (scales.ndimension() != 3 || scales.size(0) != batch || scales.size(1) != num_points || scales.size(2) != 3)
+    {
+      AT_ERROR("scales must have dimensions (batch, num_points, 3)");
+    }
+  }
+  if (!omit_rot)
+  {
+    if (rotations.ndimension() != 3 || rotations.size(0) != batch || rotations.size(1) != num_points || rotations.size(2) != 4)
+    {
+      AT_ERROR("rotations must have dimensions (batch, num_points, 4)");
+    }
   }
 
-  if (rotations.ndimension() != 3 || rotations.size(0) != batch || rotations.size(1) != num_points || rotations.size(2) != 4)
+  if (!omit_cov)
   {
-    AT_ERROR("rotations must have dimensions (batch, num_points, 4)");
-  }
-
-  if (cov3D_precomp.ndimension() != 3 || cov3D_precomp.size(0) != batch || cov3D_precomp.size(1) != num_points || cov3D_precomp.size(2) != 6)
-  {
-    AT_ERROR("cov3D_precomp must have dimensions (batch, num_points, 6)");
+    if (cov3D_precomp.ndimension() != 3 || cov3D_precomp.size(0) != batch || cov3D_precomp.size(1) != num_points || cov3D_precomp.size(2) != 6)
+    {
+      AT_ERROR("cov3D_precomp must have dimensions (batch, num_points, 6)");
+    }
   }
 
   if (viewmatrix.ndimension() != 2 || viewmatrix.size(0) != 4 || viewmatrix.size(1) != 4)
@@ -118,9 +142,12 @@ RasterizeGaussiansCUDA(
     AT_ERROR("campos must have dimensions (3)");
   }
 
-  if (sh.ndimension() != 4 || sh.size(0) != batch || sh.size(1) != num_points || sh.size(3) != 3)
+  if (!omit_sh)
   {
-    AT_ERROR("sh must have dimensions (batch, num_points, M, 3)");
+    if (sh.ndimension() != 4 || sh.size(0) != batch || sh.size(1) != num_points || sh.size(3) != 3)
+    {
+      AT_ERROR("sh must have dimensions (batch, num_points, M, 3)");
+    }
   }
 
   // m is max_coeffs for SH
@@ -143,46 +170,62 @@ RasterizeGaussiansCUDA(
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
 
-  torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
-  torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
-  torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
+  std::vector<torch::Tensor> geomBufferVec;
+  std::vector<torch::Tensor> binningBufferVec;
+  std::vector<torch::Tensor> imgBufferVec; 
+
 
   int rendered = 0;
-  if (P != 0)
+  for (int b = 0; b < batch; b++)
   {
-    for (int b = 0; b < batch; b++)
-    {
-      std::function<char *(size_t)> geomFunc = resizeFunctional(geomBuffer);
-      std::function<char *(size_t)> binningFunc = resizeFunctional(binningBuffer);
-      std::function<char *(size_t)> imgFunc = resizeFunctional(imgBuffer);
+    torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
+    torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
+    torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
 
-      rendered += CudaRasterizer::Rasterizer::forward(
-          geomFunc,
-          binningFunc,
-          imgFunc,
-          P, degree, M,
-          background.contiguous().data<float>(),
-          W, H,
-          means3D[b].contiguous().data<float>(),
-          sh[b].contiguous().data_ptr<float>(),
-          colors[b].contiguous().data<float>(),
-          opacity[b].contiguous().data<float>(),
-          scales[b].contiguous().data_ptr<float>(),
-          scale_modifier,
-          rotations[b].contiguous().data_ptr<float>(),
-          cov3D_precomp[b].contiguous().data<float>(),
-          viewmatrix.contiguous().data<float>(),
-          projmatrix.contiguous().data<float>(),
-          campos.contiguous().data<float>(),
-          tan_fovx,
-          tan_fovy,
-          prefiltered,
-          out_color[b].contiguous().data<float>(),
-          radii[b].contiguous().data<int>(),
-          debug);
-    }
+    std::function<char *(size_t)> geomFunc = resizeFunctional(geomBuffer);
+    std::function<char *(size_t)> binningFunc = resizeFunctional(binningBuffer);
+    std::function<char *(size_t)> imgFunc = resizeFunctional(imgBuffer);
+
+    rendered += CudaRasterizer::Rasterizer::forward(
+        geomFunc,
+        binningFunc,
+        imgFunc,
+        P, degree, M,
+        background.contiguous().data<float>(),
+        W, H,
+        means3D[b].contiguous().data<float>(),
+        omit_sh
+            ? sh.contiguous().data_ptr<float>()
+            : sh[b].contiguous().data_ptr<float>(),
+        omit_color
+            ? colors.contiguous().data<float>()
+            : colors[b].contiguous().data<float>(),
+        opacity[b].contiguous().data<float>(),
+        omit_scale
+            ? scales.contiguous().data_ptr<float>()
+            : scales[b].contiguous().data_ptr<float>(),
+        scale_modifier,
+        omit_rot
+            ? rotations.contiguous().data_ptr<float>()
+            : rotations[b].contiguous().data_ptr<float>(),
+        omit_cov
+            ? cov3D_precomp.contiguous().data<float>()
+            : cov3D_precomp[b].contiguous().data<float>(),
+        viewmatrix.contiguous().data<float>(),
+        projmatrix.contiguous().data<float>(),
+        campos.contiguous().data<float>(),
+        tan_fovx,
+        tan_fovy,
+        prefiltered,
+        out_color[b].data<float>(),
+        radii[b].data<int>(),
+        debug);
+  
+    geomBufferVec.push_back(geomBuffer);
+    binningBufferVec.push_back(binningBuffer);
+    imgBufferVec.push_back(imgBuffer);
   }
-  return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color, radii, geomBufferVec, binningBufferVec, imgBufferVec);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
