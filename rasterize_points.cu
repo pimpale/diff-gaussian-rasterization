@@ -61,12 +61,17 @@ RasterizeGaussiansCUDA(
     AT_ERROR("means3D must have dimensions (batch, num_points, 3)");
   }
 
+
+  auto batch = means3D.size(0);
+  auto num_points = means3D.size(1);
+
   if (batch == 0) {
     AT_ERROR("batch size must be > 0");
   }
 
-  auto batch = means3D.size(0);
-  auto num_points = means3D.size(1);
+  if (num_points == 0) {
+    AT_ERROR("num_points must be > 0");
+  }
 
   if (background.ndimension() != 1 || background.size(0) != NUM_CHANNELS)
   {
@@ -138,14 +143,15 @@ RasterizeGaussiansCUDA(
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
 
+  torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
+  torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
+  torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
+
   int rendered = 0;
   if (P != 0)
   {
     for (int b = 0; b < batch; b++)
     {
-      torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
-      torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
-      torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
       std::function<char *(size_t)> geomFunc = resizeFunctional(geomBuffer);
       std::function<char *(size_t)> binningFunc = resizeFunctional(binningBuffer);
       std::function<char *(size_t)> imgFunc = resizeFunctional(imgBuffer);

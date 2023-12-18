@@ -1,10 +1,10 @@
 build/
-diff_gaussian_rasterization.egg-info/
+diff_gaussian_rasterization_batched.egg-info/
 dist/
 CMakeCache.txt
 CMakeFiles/
 Makefile
 cmake_install.cmake
-diff_gaussian_rasterization/__pycache__/
+diff_gaussian_rasterization_batched/__pycache__/
 *.so
 *.a
