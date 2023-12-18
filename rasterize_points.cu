@@ -61,6 +61,10 @@ RasterizeGaussiansCUDA(
     AT_ERROR("means3D must have dimensions (batch, num_points, 3)");
   }
 
+  if (batch == 0) {
+    AT_ERROR("batch size must be > 0");
+  }
+
   auto batch = means3D.size(0);
   auto num_points = means3D.size(1);
 
@@ -114,13 +118,14 @@ RasterizeGaussiansCUDA(
     AT_ERROR("sh must have dimensions (batch, num_points, M, 3)");
   }
 
+  // m is max_coeffs for SH
   int M = 0;
   if (sh.size(0) != 0)
   {
-    M = sh.size(1);
+    M = sh.size(2);
   }
 
-  const int P = means3D.size(1);
+  const int P = num_points;
   const int H = image_height;
   const int W = image_width;
 
