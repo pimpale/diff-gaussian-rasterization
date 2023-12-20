@@ -36,13 +36,12 @@ std::function<char *(size_t N)> resizeFunctional(torch::Tensor &t)
 }
 
 std::tuple<
-  int,
-  torch::Tensor,
-  torch::Tensor,
-  std::vector<torch::Tensor>,
-  std::vector<torch::Tensor>,
-  std::vector<torch::Tensor>
->
+    int,
+    torch::Tensor,
+    torch::Tensor,
+    std::vector<torch::Tensor>,
+    std::vector<torch::Tensor>,
+    std::vector<torch::Tensor>>
 RasterizeGaussiansCUDA(
     const torch::Tensor &background,
     const torch::Tensor &means3D,
@@ -172,8 +171,7 @@ RasterizeGaussiansCUDA(
 
   std::vector<torch::Tensor> geomBufferVec;
   std::vector<torch::Tensor> binningBufferVec;
-  std::vector<torch::Tensor> imgBufferVec; 
-
+  std::vector<torch::Tensor> imgBufferVec;
 
   int rendered = 0;
   for (int b = 0; b < batch; b++)
@@ -191,16 +189,16 @@ RasterizeGaussiansCUDA(
         binningFunc,
         imgFunc,
         P, degree, M,
-        background.contiguous().data<float>(),
+        background.contiguous().data_ptr<float>(),
         W, H,
-        means3D[b].contiguous().data<float>(),
+        means3D[b].contiguous().data_ptr<float>(),
         omit_sh
             ? sh.contiguous().data_ptr<float>()
             : sh[b].contiguous().data_ptr<float>(),
         omit_color
-            ? colors.contiguous().data<float>()
-            : colors[b].contiguous().data<float>(),
-        opacity[b].contiguous().data<float>(),
+            ? colors.contiguous().data_ptr<float>()
+            : colors[b].contiguous().data_ptr<float>(),
+        opacity[b].contiguous().data_ptr<float>(),
         omit_scale
             ? scales.contiguous().data_ptr<float>()
             : scales[b].contiguous().data_ptr<float>(),
@@ -209,18 +207,18 @@ RasterizeGaussiansCUDA(
             ? rotations.contiguous().data_ptr<float>()
             : rotations[b].contiguous().data_ptr<float>(),
         omit_cov
-            ? cov3D_precomp.contiguous().data<float>()
-            : cov3D_precomp[b].contiguous().data<float>(),
-        viewmatrix.contiguous().data<float>(),
-        projmatrix.contiguous().data<float>(),
-        campos.contiguous().data<float>(),
+            ? cov3D_precomp.contiguous().data_ptr<float>()
+            : cov3D_precomp[b].contiguous().data_ptr<float>(),
+        viewmatrix.contiguous().data_ptr<float>(),
+        projmatrix.contiguous().data_ptr<float>(),
+        campos.contiguous().data_ptr<float>(),
         tan_fovx,
         tan_fovy,
         prefiltered,
-        out_color[b].data<float>(),
-        radii[b].data<int>(),
+        out_color[b].data_ptr<float>(),
+        radii[b].data_ptr<int>(),
         debug);
-  
+
     geomBufferVec.push_back(geomBuffer);
     binningBufferVec.push_back(binningBuffer);
     imgBufferVec.push_back(imgBuffer);
@@ -246,63 +244,181 @@ RasterizeGaussiansBackwardCUDA(
     const torch::Tensor &sh,
     const int degree,
     const torch::Tensor &campos,
-    const torch::Tensor &geomBuffer,
+    const std::vector<torch::Tensor> &geomBuffer,
     const int R,
-    const torch::Tensor &binningBuffer,
-    const torch::Tensor &imageBuffer,
+    const std::vector<torch::Tensor> &binningBuffer,
+    const std::vector<torch::Tensor> &imageBuffer,
     const bool debug)
 {
-  const int P = means3D.size(0);
-  const int H = dL_dout_color.size(1);
-  const int W = dL_dout_color.size(2);
+  bool omit_scale = scales.ndimension() == 1 && scales.size(0) == 0;
+  bool omit_rot = rotations.ndimension() == 1 && rotations.size(0) == 0;
+  bool omit_cov = cov3D_precomp.ndimension() == 1 && cov3D_precomp.size(0) == 0;
+  bool omit_sh = sh.ndimension() == 1 && sh.size(0) == 0;
+  bool omit_color = colors.ndimension() == 1 && colors.size(0) == 0;
 
+  if (means3D.ndimension() != 3 || means3D.size(2) != 3)
+  {
+    AT_ERROR("means3D must have dimensions (batch, num_points, 3)");
+  }
+
+  auto batch = means3D.size(0);
+  auto num_points = means3D.size(1);
+
+  if (batch == 0)
+  {
+    AT_ERROR("batch size must be > 0");
+  }
+
+  if (num_points == 0)
+  {
+    AT_ERROR("num_points must be > 0");
+  }
+
+  if (background.ndimension() != 1 || background.size(0) != NUM_CHANNELS)
+  {
+    AT_ERROR("background must have dimensions (3)");
+  }
+
+  if (!omit_color)
+  {
+    if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != NUM_CHANNELS)
+    {
+      AT_ERROR("colors must have dimensions (batch, num_points, 3)");
+    }
+  }
+  if (!omit_scale)
+  {
+    if (scales.ndimension() != 3 || scales.size(0) != batch || scales.size(1) != num_points || scales.size(2) != 3)
+    {
+      AT_ERROR("scales must have dimensions (batch, num_points, 3)");
+    }
+  }
+  if (!omit_rot)
+  {
+    if (rotations.ndimension() != 3 || rotations.size(0) != batch || rotations.size(1) != num_points || rotations.size(2) != 4)
+    {
+      AT_ERROR("rotations must have dimensions (batch, num_points, 4)");
+    }
+  }
+
+  if (!omit_cov)
+  {
+    if (cov3D_precomp.ndimension() != 3 || cov3D_precomp.size(0) != batch || cov3D_precomp.size(1) != num_points || cov3D_precomp.size(2) != 6)
+    {
+      AT_ERROR("cov3D_precomp must have dimensions (batch, num_points, 6)");
+    }
+  }
+
+  if (viewmatrix.ndimension() != 2 || viewmatrix.size(0) != 4 || viewmatrix.size(1) != 4)
+  {
+    AT_ERROR("viewmatrix must have dimensions (4, 4)");
+  }
+
+  if (projmatrix.ndimension() != 2 || projmatrix.size(0) != 4 || projmatrix.size(1) != 4)
+  {
+    AT_ERROR("projmatrix must have dimensions (4, 4)");
+  }
+
+  if (campos.ndimension() != 1 || campos.size(0) != 3)
+  {
+    AT_ERROR("campos must have dimensions (3)");
+  }
+
+  if (!omit_sh)
+  {
+    if (sh.ndimension() != 4 || sh.size(0) != batch || sh.size(1) != num_points || sh.size(3) != 3)
+    {
+      AT_ERROR("sh must have dimensions (batch, num_points, M, 3)");
+    }
+  }
+
+  if (radii.ndimension() != 2 || radii.size(0) != batch || radii.size(1) != num_points)
+  {
+    AT_ERROR("radii must have dimensions (batch, num_points)");
+  }
+
+  if (dL_dout_color.ndimension() != 4 || dL_dout_color.size(0) != batch || dL_dout_color.size(1) != NUM_CHANNELS)
+  {
+    AT_ERROR("dL_dout_color must have dimensions (batch, 3, H, W)");
+  }
+
+  if (geomBuffer.size() != batch)
+  {
+    AT_ERROR("geomBuffer must have dimensions (batch)");
+  }
+
+  if (binningBuffer.size() != batch)
+  {
+    AT_ERROR("binningBuffer must have dimensions (batch)");
+  }
+
+  if (imageBuffer.size() != batch)
+  {
+    AT_ERROR("imageBuffer must have dimensions (batch)");
+  }
+
+  // m is max_coeffs for SH
   int M = 0;
   if (sh.size(0) != 0)
   {
-    M = sh.size(1);
+    M = sh.size(2);
   }
 
-  torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
-  torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
-  torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS}, means3D.options());
-  torch::Tensor dL_dconic = torch::zeros({P, 2, 2}, means3D.options());
-  torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
-  torch::Tensor dL_dcov3D = torch::zeros({P, 6}, means3D.options());
-  torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
-  torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
-  torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
+  const int P = num_points;
+  const int H = dL_dout_color.size(2);
+  const int W = dL_dout_color.size(3);
 
-  if (P != 0)
+  torch::Tensor dL_dmeans3D = torch::zeros({batch, P, 3}, means3D.options());
+  torch::Tensor dL_dmeans2D = torch::zeros({batch, P, 3}, means3D.options());
+  torch::Tensor dL_dcolors = torch::zeros({batch, P, NUM_CHANNELS}, means3D.options());
+  torch::Tensor dL_dconic = torch::zeros({batch, P, 2, 2}, means3D.options());
+  torch::Tensor dL_dopacity = torch::zeros({batch, P, 1}, means3D.options());
+  torch::Tensor dL_dcov3D = torch::zeros({batch, P, 6}, means3D.options());
+  torch::Tensor dL_dsh = torch::zeros({batch, P, M, 3}, means3D.options());
+  torch::Tensor dL_dscales = torch::zeros({batch, P, 3}, means3D.options());
+  torch::Tensor dL_drotations = torch::zeros({batch, P, 4}, means3D.options());
+
+  for (int b = 0; b < batch; b++)
   {
     CudaRasterizer::Rasterizer::backward(P, degree, M, R,
-                                         background.contiguous().data<float>(),
+                                         background.contiguous().data_ptr<float>(),
                                          W, H,
-                                         means3D.contiguous().data<float>(),
-                                         sh.contiguous().data<float>(),
-                                         colors.contiguous().data<float>(),
-                                         scales.data_ptr<float>(),
+                                         means3D[b].contiguous().data_ptr<float>(),
+                                         omit_sh
+                                             ? sh.contiguous().data_ptr<float>()
+                                             : sh[b].contiguous().data_ptr<float>(),
+                                         omit_color
+                                             ? colors.contiguous().data_ptr<float>()
+                                             : colors[b].contiguous().data_ptr<float>(),
+                                         omit_scale
+                                             ? scales.contiguous().data_ptr<float>()
+                                             : scales[b].contiguous().data_ptr<float>(),
                                          scale_modifier,
-                                         rotations.data_ptr<float>(),
-                                         cov3D_precomp.contiguous().data<float>(),
-                                         viewmatrix.contiguous().data<float>(),
-                                         projmatrix.contiguous().data<float>(),
-                                         campos.contiguous().data<float>(),
+                                         omit_rot
+                                             ? rotations.contiguous().data_ptr<float>()
+                                             : rotations[b].contiguous().data_ptr<float>(),
+                                         omit_cov
+                                             ? cov3D_precomp.contiguous().data_ptr<float>()
+                                             : cov3D_precomp[b].contiguous().data_ptr<float>(),
+                                         viewmatrix.contiguous().data_ptr<float>(),
+                                         projmatrix.contiguous().data_ptr<float>(),
+                                         campos.contiguous().data_ptr<float>(),
                                          tan_fovx,
                                          tan_fovy,
-                                         radii.contiguous().data<int>(),
-                                         reinterpret_cast<char *>(geomBuffer.contiguous().data_ptr()),
-                                         reinterpret_cast<char *>(binningBuffer.contiguous().data_ptr()),
-                                         reinterpret_cast<char *>(imageBuffer.contiguous().data_ptr()),
-                                         dL_dout_color.contiguous().data<float>(),
-                                         dL_dmeans2D.contiguous().data<float>(),
-                                         dL_dconic.contiguous().data<float>(),
-                                         dL_dopacity.contiguous().data<float>(),
-                                         dL_dcolors.contiguous().data<float>(),
-                                         dL_dmeans3D.contiguous().data<float>(),
-                                         dL_dcov3D.contiguous().data<float>(),
-                                         dL_dsh.contiguous().data<float>(),
-                                         dL_dscales.contiguous().data<float>(),
-                                         dL_drotations.contiguous().data<float>(),
+                                         radii[b].contiguous().data_ptr<int>(),
+                                         reinterpret_cast<char *>(geomBuffer[b].contiguous().data_ptr()),
+                                         reinterpret_cast<char *>(binningBuffer[b].contiguous().data_ptr()),
+                                         reinterpret_cast<char *>(imageBuffer[b].contiguous().data_ptr()),
+                                         dL_dout_color[b].contiguous().data_ptr<float>(),
+                                         dL_dmeans2D[b].contiguous().data_ptr<float>(),
+                                         dL_dconic[b].contiguous().data_ptr<float>(),
+                                         dL_dopacity[b].contiguous().data_ptr<float>(),
+                                         dL_dcolors[b].contiguous().data_ptr<float>(),
+                                         dL_dmeans3D[b].contiguous().data_ptr<float>(),
+                                         dL_dcov3D[b].contiguous().data_ptr<float>(),
+                                         dL_dsh[b].contiguous().data_ptr<float>(),
+                                         dL_dscales[b].contiguous().data_ptr<float>(),
+                                         dL_drotations[b].contiguous().data_ptr<float>(),
                                          debug);
   }
 
@@ -321,10 +437,10 @@ torch::Tensor markVisible(
   if (P != 0)
   {
     CudaRasterizer::Rasterizer::markVisible(P,
-                                            means3D.contiguous().data<float>(),
-                                            viewmatrix.contiguous().data<float>(),
-                                            projmatrix.contiguous().data<float>(),
-                                            present.contiguous().data<bool>());
+                                            means3D.contiguous().data_ptr<float>(),
+                                            viewmatrix.contiguous().data_ptr<float>(),
+                                            projmatrix.contiguous().data_ptr<float>(),
+                                            present.contiguous().data_ptr<bool>());
   }
 
   return present;
