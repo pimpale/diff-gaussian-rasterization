@@ -37,6 +37,7 @@ RasterizeGaussiansCUDA(
     const torch::Tensor &projmatrix,
     const float tan_fovx,
     const float tan_fovy,
+    const int image_channels,
     const int image_height,
     const int image_width,
     const torch::Tensor &sh,
