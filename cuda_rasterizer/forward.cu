@@ -152,7 +152,6 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
-template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const glm::vec3* scales,
@@ -166,7 +165,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-	const int W, int H,
+	const int C, const int W, const int H,
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
 	int* radii,
@@ -258,12 +257,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS>
+template <uint32_t MAX_CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
-	int W, int H,
+	const int C, const int W, const int H,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
@@ -300,7 +299,7 @@ renderCUDA(
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
-	float C[CHANNELS] = { 0 };
+	float C_tmp[MAX_CHANNELS] = { 0 };
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -351,8 +350,8 @@ renderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			for (int ch = 0; ch < C; ch++)
+				C_tmp[ch] += features[collected_id[j] * C + ch] * alpha * T;
 
 			T = test_T;
 
@@ -368,8 +367,8 @@ renderCUDA(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
-		for (int ch = 0; ch < CHANNELS; ch++)
-			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+		for (int ch = 0; ch < C; ch++)
+			out_color[ch * H * W + pix_id] = C_tmp[ch] + T * bg_color[ch];
 	}
 }
 
@@ -377,7 +376,7 @@ void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
-	int W, int H,
+	const int C, const int W, const int H,
 	const float2* means2D,
 	const float* colors,
 	const float4* conic_opacity,
@@ -386,10 +385,10 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+	renderCUDA<MAX_NUM_CHANNELS><< <grid, block >> > (
 		ranges,
 		point_list,
-		W, H,
+		C, W, H,
 		means2D,
 		colors,
 		conic_opacity,
@@ -412,7 +411,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-	const int W, int H,
+	const int C, const int W,  const int H,
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	int* radii,
@@ -425,7 +424,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
-	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+	preprocessCUDA<< <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		scales,
@@ -439,7 +438,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		viewmatrix, 
 		projmatrix,
 		cam_pos,
-		W, H,
+		C, W, H,
 		tan_fovx, tan_fovy,
 		focal_x, focal_y,
 		radii,

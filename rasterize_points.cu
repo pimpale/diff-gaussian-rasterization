@@ -55,6 +55,7 @@ RasterizeGaussiansCUDA(
     const torch::Tensor &projmatrix,
     const float tan_fovx,
     const float tan_fovy,
+    const int image_channels,
     const int image_height,
     const int image_width,
     const torch::Tensor &sh,
@@ -87,16 +88,28 @@ RasterizeGaussiansCUDA(
     AT_ERROR("num_points must be > 0");
   }
 
-  if (background.ndimension() != 1 || background.size(0) != NUM_CHANNELS)
+  if(image_channels > MAX_NUM_CHANNELS) {
+    AT_ERROR("image_channels must be <= MAX_NUM_CHANNELS");
+  }
+
+  if(image_channels <= 0) {
+    AT_ERROR("image_channels must be > 0");
+  }
+
+  if(!omit_sh && image_channels != 3) {
+    AT_ERROR("image_channels must be 3 when using SH");
+  }
+
+  if (background.ndimension() != 1 || background.size(0) != image_channels)
   {
-    AT_ERROR("background must have dimensions (3)");
+    AT_ERROR("background must have dimensions (image_channels)");
   }
 
   if (!omit_color)
   {
-    if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != NUM_CHANNELS)
+    if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != image_channels)
     {
-      AT_ERROR("colors must have dimensions (batch, num_points, 3)");
+      AT_ERROR("colors must have dimensions (batch, num_points, image_channels)");
     }
   }
   if (opacity.ndimension() != 3 || opacity.size(0) != batch || opacity.size(1) != num_points || opacity.size(2) != 1)
@@ -157,13 +170,14 @@ RasterizeGaussiansCUDA(
   }
 
   const int P = num_points;
+  const int C = image_channels;
   const int H = image_height;
   const int W = image_width;
 
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
-  torch::Tensor out_color = torch::full({batch, NUM_CHANNELS, H, W}, 0.0, float_opts);
+  torch::Tensor out_color = torch::full({batch, C, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({batch, P}, 0, means3D.options().dtype(torch::kInt32));
 
   torch::Device device(torch::kCUDA);
@@ -190,7 +204,7 @@ RasterizeGaussiansCUDA(
         imgFunc,
         P, degree, M,
         background.contiguous().data_ptr<float>(),
-        W, H,
+        C, W, H,
         means3D[b].contiguous().data_ptr<float>(),
         omit_sh
             ? sh.contiguous().data_ptr<float>()
@@ -261,8 +275,23 @@ RasterizeGaussiansBackwardCUDA(
     AT_ERROR("means3D must have dimensions (batch, num_points, 3)");
   }
 
+
   auto batch = means3D.size(0);
   auto num_points = means3D.size(1);
+  auto image_channels = dL_dout_color.size(1);
+
+
+  if(image_channels > MAX_NUM_CHANNELS) {
+    AT_ERROR("image_channels must be <= MAX_NUM_CHANNELS");
+  }
+
+  if(image_channels <= 0) {
+    AT_ERROR("image_channels must be > 0");
+  }
+
+  if(!omit_sh && image_channels != 3) {
+    AT_ERROR("image_channels must be 3 when using SH");
+  }
 
   if (batch == 0)
   {
@@ -274,16 +303,16 @@ RasterizeGaussiansBackwardCUDA(
     AT_ERROR("num_points must be > 0");
   }
 
-  if (background.ndimension() != 1 || background.size(0) != NUM_CHANNELS)
+  if (background.ndimension() != 1 || background.size(0) != image_channels)
   {
-    AT_ERROR("background must have dimensions (3)");
+    AT_ERROR("background must have dimensions (image_channels)");
   }
 
   if (!omit_color)
   {
-    if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != NUM_CHANNELS)
+    if (colors.ndimension() != 3 || colors.size(0) != batch || colors.size(1) != num_points || colors.size(2) != image_channels)
     {
-      AT_ERROR("colors must have dimensions (batch, num_points, 3)");
+      AT_ERROR("colors must have dimensions (batch, num_points, image_channels)");
     }
   }
   if (!omit_scale)
@@ -337,9 +366,9 @@ RasterizeGaussiansBackwardCUDA(
     AT_ERROR("radii must have dimensions (batch, num_points)");
   }
 
-  if (dL_dout_color.ndimension() != 4 || dL_dout_color.size(0) != batch || dL_dout_color.size(1) != NUM_CHANNELS)
+  if (dL_dout_color.ndimension() != 4 || dL_dout_color.size(0) != batch || dL_dout_color.size(1) != image_channels)
   {
-    AT_ERROR("dL_dout_color must have dimensions (batch, 3, H, W)");
+    AT_ERROR("dL_dout_color must have dimensions (batch, image_channels, H, W)");
   }
 
   if (geomBuffer.size() != batch)
@@ -365,12 +394,13 @@ RasterizeGaussiansBackwardCUDA(
   }
 
   const int P = num_points;
+  const int C = image_channels;
   const int H = dL_dout_color.size(2);
   const int W = dL_dout_color.size(3);
 
   torch::Tensor dL_dmeans3D = torch::zeros({batch, P, 3}, means3D.options());
   torch::Tensor dL_dmeans2D = torch::zeros({batch, P, 3}, means3D.options());
-  torch::Tensor dL_dcolors = torch::zeros({batch, P, NUM_CHANNELS}, means3D.options());
+  torch::Tensor dL_dcolors = torch::zeros({batch, P, C}, means3D.options());
   torch::Tensor dL_dconic = torch::zeros({batch, P, 2, 2}, means3D.options());
   torch::Tensor dL_dopacity = torch::zeros({batch, P, 1}, means3D.options());
   torch::Tensor dL_dcov3D = torch::zeros({batch, P, 6}, means3D.options());
@@ -382,7 +412,7 @@ RasterizeGaussiansBackwardCUDA(
   {
     CudaRasterizer::Rasterizer::backward(P, degree, M, R,
                                          background.contiguous().data_ptr<float>(),
-                                         W, H,
+                                         C, W, H,
                                          means3D[b].contiguous().data_ptr<float>(),
                                          omit_sh
                                              ? sh.contiguous().data_ptr<float>()

@@ -203,7 +203,7 @@ int CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> imageBuffer,
 	const int P, int D, int M,
 	const float* background,
-	const int width, int height,
+	const int channels, const int width, int height,
 	const float* means3D,
 	const float* shs,
 	const float* colors_precomp,
@@ -241,7 +241,7 @@ int CudaRasterizer::Rasterizer::forward(
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
-	if (NUM_CHANNELS != 3 && colors_precomp == nullptr)
+	if (channels != 3 && colors_precomp == nullptr)
 	{
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
@@ -260,7 +260,7 @@ int CudaRasterizer::Rasterizer::forward(
 		colors_precomp,
 		viewmatrix, projmatrix,
 		(glm::vec3*)cam_pos,
-		width, height,
+		channels, width, height,
 		focal_x, focal_y,
 		tan_fovx, tan_fovy,
 		radii,
@@ -325,7 +325,7 @@ int CudaRasterizer::Rasterizer::forward(
 		tile_grid, block,
 		imgState.ranges,
 		binningState.point_list,
-		width, height,
+		channels, width, height,
 		geomState.means2D,
 		feature_ptr,
 		geomState.conic_opacity,
@@ -342,7 +342,7 @@ int CudaRasterizer::Rasterizer::forward(
 void CudaRasterizer::Rasterizer::backward(
 	const int P, int D, int M, int R,
 	const float* background,
-	const int width, int height,
+	const int channels, const int width, int height,
 	const float* means3D,
 	const float* shs,
 	const float* colors_precomp,
@@ -394,7 +394,7 @@ void CudaRasterizer::Rasterizer::backward(
 		block,
 		imgState.ranges,
 		binningState.point_list,
-		width, height,
+		channels, width, height,
 		background,
 		geomState.means2D,
 		geomState.conic_opacity,

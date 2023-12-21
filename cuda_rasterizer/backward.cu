@@ -343,7 +343,6 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 // Backward pass of the preprocessing steps, except
 // for the covariance computation and inversion
 // (those are handled by a previous kernel call)
-template<int C>
 __global__ void preprocessCUDA(
 	int P, int D, int M,
 	const float3* means,
@@ -396,12 +395,12 @@ __global__ void preprocessCUDA(
 }
 
 // Backward version of the rendering procedure.
-template <uint32_t C>
+template <uint32_t MAX_CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
-	int W, int H,
+	const int C, const int W, const int H,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
@@ -434,7 +433,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
-	__shared__ float collected_colors[C * BLOCK_SIZE];
+	__shared__ float collected_colors[MAX_CHANNELS * BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
@@ -446,14 +445,14 @@ renderCUDA(
 	uint32_t contributor = toDo;
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	float accum_rec[C] = { 0 };
-	float dL_dpixel[C];
+	float accum_rec[MAX_CHANNELS] = { 0 };
+	float dL_dpixel[MAX_CHANNELS];
 	if (inside)
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
 	float last_alpha = 0;
-	float last_color[C] = { 0 };
+	float last_color[MAX_CHANNELS] = { 0 };
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
@@ -601,7 +600,7 @@ void BACKWARD::preprocess(
 	// Propagate gradients for remaining steps: finish 3D mean gradients,
 	// propagate color gradients to SH (if desireD), propagate 3D covariance
 	// matrix gradients to scale and rotation.
-	preprocessCUDA<NUM_CHANNELS> << < (P + 255) / 256, 256 >> > (
+	preprocessCUDA<< < (P + 255) / 256, 256 >> > (
 		P, D, M,
 		(float3*)means3D,
 		radii,
@@ -625,7 +624,7 @@ void BACKWARD::render(
 	const dim3 grid, const dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
-	int W, int H,
+	const int C, const int W, const int H,
 	const float* bg_color,
 	const float2* means2D,
 	const float4* conic_opacity,
@@ -638,10 +637,10 @@ void BACKWARD::render(
 	float* dL_dopacity,
 	float* dL_dcolors)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
+	renderCUDA<MAX_NUM_CHANNELS> << <grid, block >> >(
 		ranges,
 		point_list,
-		W, H,
+		C, W, H,
 		bg_color,
 		means2D,
 		conic_opacity,
