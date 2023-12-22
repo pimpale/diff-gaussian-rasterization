@@ -139,9 +139,9 @@ RasterizeGaussiansCUDA(
     }
   }
 
-  if (viewmatrix.ndimension() != 2 || viewmatrix.size(0) != 4 || viewmatrix.size(1) != 4)
+  if (viewmatrix.ndimension() != 3 || viewmatrix.size(0) != batch || viewmatrix.size(1) != 4 || viewmatrix.size(2) != 4)
   {
-    AT_ERROR("viewmatrix must have dimensions (4, 4)");
+    AT_ERROR("viewmatrix must have dimensions (batch, 4, 4)");
   }
 
   if (projmatrix.ndimension() != 2 || projmatrix.size(0) != 4 || projmatrix.size(1) != 4)
@@ -223,7 +223,7 @@ RasterizeGaussiansCUDA(
         omit_cov
             ? cov3D_precomp.contiguous().data_ptr<float>()
             : cov3D_precomp[b].contiguous().data_ptr<float>(),
-        viewmatrix.contiguous().data_ptr<float>(),
+        viewmatrix[b].contiguous().data_ptr<float>(),
         projmatrix.contiguous().data_ptr<float>(),
         campos.contiguous().data_ptr<float>(),
         tan_fovx,
@@ -338,9 +338,9 @@ RasterizeGaussiansBackwardCUDA(
     }
   }
 
-  if (viewmatrix.ndimension() != 2 || viewmatrix.size(0) != 4 || viewmatrix.size(1) != 4)
+  if (viewmatrix.ndimension() != 3 || viewmatrix.size(0) != batch || viewmatrix.size(1) != 4 || viewmatrix.size(2) != 4)
   {
-    AT_ERROR("viewmatrix must have dimensions (4, 4)");
+    AT_ERROR("viewmatrix must have dimensions (batch, 4, 4)");
   }
 
   if (projmatrix.ndimension() != 2 || projmatrix.size(0) != 4 || projmatrix.size(1) != 4)
@@ -430,7 +430,7 @@ RasterizeGaussiansBackwardCUDA(
                                          omit_cov
                                              ? cov3D_precomp.contiguous().data_ptr<float>()
                                              : cov3D_precomp[b].contiguous().data_ptr<float>(),
-                                         viewmatrix.contiguous().data_ptr<float>(),
+                                         viewmatrix[b].contiguous().data_ptr<float>(),
                                          projmatrix.contiguous().data_ptr<float>(),
                                          campos.contiguous().data_ptr<float>(),
                                          tan_fovx,

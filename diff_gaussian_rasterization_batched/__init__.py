@@ -27,6 +27,7 @@ def rasterize_gaussians(
     scales,
     rotations,
     cov3Ds_precomp,
+    viewmatrixes,
     raster_settings,
 ):
     return _RasterizeGaussians.apply(
@@ -38,6 +39,7 @@ def rasterize_gaussians(
         scales,
         rotations,
         cov3Ds_precomp,
+        viewmatrixes,
         raster_settings,
     )
 
@@ -53,6 +55,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         scales,
         rotations,
         cov3Ds_precomp,
+        viewmatrixes,
         raster_settings,
     ):
 
@@ -66,7 +69,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             rotations,
             raster_settings.scale_modifier,
             cov3Ds_precomp,
-            raster_settings.viewmatrix,
+            viewmatrixes,
             raster_settings.projmatrix,
             raster_settings.tanfovx,
             raster_settings.tanfovy,
@@ -94,6 +97,7 @@ class _RasterizeGaussians(torch.autograd.Function):
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
+        ctx.viewmatrixes = viewmatrixes
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh)
         # buffers are lists of tensors, so we need to save them separately
@@ -113,6 +117,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         geomBuffer = ctx.geomBuffer
         binningBuffer = ctx.binningBuffer
         imgBuffer = ctx.imgBuffer
+        viewmatrixes = ctx.viewmatrixes
 
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
@@ -123,7 +128,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 rotations, 
                 raster_settings.scale_modifier, 
                 cov3Ds_precomp, 
-                raster_settings.viewmatrix, 
+                viewmatrixes, 
                 raster_settings.projmatrix, 
                 raster_settings.tanfovx, 
                 raster_settings.tanfovy, 
@@ -159,6 +164,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_rotations,
             grad_cov3Ds_precomp,
             None,
+            None,
         )
 
         return grads
@@ -171,7 +177,6 @@ class GaussianRasterizationSettings(NamedTuple):
     tanfovy : float
     bg : torch.Tensor
     scale_modifier : float
-    viewmatrix : torch.Tensor
     projmatrix : torch.Tensor
     sh_degree : int
     campos : torch.Tensor
@@ -194,7 +199,7 @@ class GaussianRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, viewmatrixes, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
 
@@ -226,6 +231,7 @@ class GaussianRasterizer(nn.Module):
             scales, 
             rotations,
             cov3D_precomp,
+            viewmatrixes,
             raster_settings, 
         )
 
